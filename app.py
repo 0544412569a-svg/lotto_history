@@ -1,73 +1,81 @@
 from collections import Counter
+from io import StringIO
 from itertools import combinations
 import os
 import pandas as pd
+import requests
+from requests.auth import HTTPBasicAuth
 import streamlit as st
-from webdav3.client import Client
 
 st.set_page_config(
     page_title="Анализатор Лотереи 6/37", page_icon="🎰", layout="wide"
 )
 
-# --- Подключение к Облаку Mail.ru ---
+# --- Подключение к Облаку Mail.ru через requests (вход в обход 403) ---
 WEBDAV_HOSTNAME = "https://webdav.mail.ru"
 WEBDAV_LOGIN = st.secrets.get("WEBDAV_LOGIN", "")
 WEBDAV_PASSWORD = st.secrets.get("WEBDAV_PASSWORD", "")
 
-webdav_options = {
-    "webdav_hostname": WEBDAV_HOSTNAME,
-    "webdav_login": WEBDAV_LOGIN,
-    "webdav_password": WEBDAV_PASSWORD,
-}
-
-client = Client(webdav_options)
 FILENAME = "lotto_history.csv"
 COLUMNS = ["n1", "n2", "n3", "n4", "n5", "n6", "strong_number"]
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+}
 
 
 # --- Функции загрузки и сохранения данных ---
 def load_data():
-    """Загрузка базы тиражей без использования вызова check()"""
+    """Загрузка файла прямо из WebDAV без вызовов PROPFIND/check"""
+    url = f"{WEBDAV_HOSTNAME}/{FILENAME}"
     try:
-        client.download_sync(remote_path=FILENAME, local_path=FILENAME)
-    except Exception:
-        df_empty = pd.DataFrame(columns=COLUMNS)
-        df_empty.to_csv(FILENAME, index=False)
-        try:
-            client.upload_sync(remote_path=FILENAME, local_path=FILENAME)
-        except Exception:
-            pass
-
-    if os.path.exists(FILENAME):
-        try:
-            df = pd.read_csv(FILENAME)
+        res = requests.get(
+            url,
+            auth=HTTPBasicAuth(WEBDAV_LOGIN, WEBDAV_PASSWORD),
+            headers=HEADERS,
+            timeout=10,
+        )
+        if res.status_code == 200:
+            df = pd.read_csv(StringIO(res.text))
             for col in COLUMNS:
                 if col not in df.columns:
                     df[col] = 0
             return df[COLUMNS]
+    except Exception:
+        pass
+
+    # В случае отсутствия создаем локально
+    if os.path.exists(FILENAME):
+        try:
+            return pd.read_csv(FILENAME)[COLUMNS]
         except Exception:
-            return pd.DataFrame(columns=COLUMNS)
+            pass
 
     return pd.DataFrame(columns=COLUMNS)
 
 
 def save_data(df):
-    """Сохранение файла с предварительным удалением старой версии из облака"""
+    """Прямая запись PUT в WebDAV Mail.ru"""
+    url = f"{WEBDAV_HOSTNAME}/{FILENAME}"
+    csv_data = df.to_csv(index=False)
     try:
-        # Сохраняем локально
-        df.to_csv(FILENAME, index=False)
-
-        # Удаляем существующий файл в облаке, если он там есть
-        try:
-            client.clean(FILENAME)
-        except Exception:
-            pass
-
-        # Загружаем новый файл
-        client.upload_sync(remote_path=FILENAME, local_path=FILENAME)
-        return True
+        res = requests.put(
+            url,
+            data=csv_data.encode("utf-8"),
+            auth=HTTPBasicAuth(WEBDAV_LOGIN, WEBDAV_PASSWORD),
+            headers=HEADERS,
+            timeout=10,
+        )
+        if res.status_code in [200, 201, 204]:
+            df.to_csv(FILENAME, index=False)
+            return True
+        else:
+            st.error(
+                f"Ошибка сохранения Mail.ru WebDAV: Код {res.status_code} ({res.reason})"
+            )
+            return False
     except Exception as e:
-        st.error(f"Не удалось сохранить данные в облако: {e}")
+        st.error(f"Не удалось связаться с облаком: {e}")
         return False
 
 
