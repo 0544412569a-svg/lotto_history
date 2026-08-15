@@ -1,70 +1,65 @@
 from collections import Counter
 from itertools import combinations
-import sqlite3
+import os
 import pandas as pd
 import streamlit as st
+from webdav3.client import Client
 
 st.set_page_config(
     page_title="Анализатор Лотереи 6/37", page_icon="🎰", layout="wide"
 )
 
-DB_NAME = "lotto_history.db"
+# --- Подключение к Облаку Mail.ru ---
+WEBDAV_HOSTNAME = "https://webdav.mail.ru"
+WEBDAV_LOGIN = st.secrets.get("WEBDAV_LOGIN", "")
+WEBDAV_PASSWORD = st.secrets.get("WEBDAV_PASSWORD", "")
+
+webdav_options = {
+    "webdav_hostname": WEBDAV_HOSTNAME,
+    "webdav_login": WEBDAV_LOGIN,
+    "webdav_password": WEBDAV_PASSWORD,
+}
+
+client = Client(webdav_options)
+FILENAME = "lotto_history.csv"
+COLUMNS = ["n1", "n2", "n3", "n4", "n5", "n6", "strong_number"]
 
 
-# --- Инициализация локальной базы данных SQLite ---
-def init_db():
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS draws (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            draw_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            n1 INTEGER, n2 INTEGER, n3 INTEGER, n4 INTEGER, n5 INTEGER, n6 INTEGER,
-            strong_number INTEGER
-        )
-    """)
-    conn.commit()
-    conn.close()
+# --- Функции загрузки и сохранения данных ---
+def load_data():
+    """Загрузка базы тиражей из Mail.ru Cloud"""
+    try:
+        if client.check(FILENAME):
+            client.download_sync(remote_path=FILENAME, local_path=FILENAME)
+        else:
+            df_empty = pd.DataFrame(columns=COLUMNS)
+            df_empty.to_csv(FILENAME, index=False)
+            client.upload_sync(remote_path=FILENAME, local_path=FILENAME)
+
+        if os.path.exists(FILENAME):
+            df = pd.read_csv(FILENAME)
+            for col in COLUMNS:
+                if col not in df.columns:
+                    df[col] = 0
+            return df[COLUMNS]
+    except Exception as e:
+        st.error(f"Ошибка подключения к Облаку Mail.ru: {e}")
+
+    return pd.DataFrame(columns=COLUMNS)
 
 
-init_db()
+def save_data(df):
+    """Сохранение базы тиражей в Mail.ru Cloud"""
+    try:
+        df.to_csv(FILENAME, index=False)
+        client.upload_sync(remote_path=FILENAME, local_path=FILENAME)
+        return True
+    except Exception as e:
+        st.error(f"Не удалось сохранить данные в облако: {e}")
+        return False
 
 
-# --- Функции работы с БД ---
-def add_draw(numbers, strong):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    sorted_nums = sorted(numbers)
-    cursor.execute(
-        """
-        INSERT INTO draws (n1, n2, n3, n4, n5, n6, strong_number)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    """,
-        (*sorted_nums, strong),
-    )
-    conn.commit()
-    conn.close()
-
-
-def load_draws():
-    conn = sqlite3.connect(DB_NAME)
-    df = pd.read_sql(
-        "SELECT * FROM draws ORDER BY draw_date DESC, id DESC", conn
-    )
-    conn.close()
-    return df
-
-
-def delete_draw(draw_id):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM draws WHERE id = ?", (draw_id,))
-    conn.commit()
-    conn.close()
-
-
-# --- Загрузка данных ---
-df_draws = load_draws()
+df_draws = load_data()
 
 st.title("🎰 Анализатор лотерейных тиражей (6/37 + Сильное число)")
 
@@ -75,58 +70,195 @@ with st.sidebar:
     with st.form("add_draw_form", clear_on_submit=True):
         st.subheader("6 основных чисел (1–37):")
         cols = st.columns(3)
-        n1 = cols[0].number_input("№1", 1, 37, 1)
-        n2 = cols[1].number_input("№2", 1, 37, 2)
-        n3 = cols[2].number_input("№3", 1, 37, 3)
-        n4 = cols[0].number_input("№4", 1, 37, 4)
-        n5 = cols[1].number_input("№5", 1, 37, 5)
-        n6 = cols[2].number_input("№6", 1, 37, 6)
+
+        # value=None позволяет оставлять поля пустыми без предварительного нуля
+        n1 = cols[0].number_input(
+            "№1", min_value=1, max_value=37, value=None, placeholder="1-37"
+        )
+        n2 = cols[1].number_input(
+            "№2", min_value=1, max_value=37, value=None, placeholder="1-37"
+        )
+        n3 = cols[2].number_input(
+            "№3", min_value=1, max_value=37, value=None, placeholder="1-37"
+        )
+        n4 = cols[0].number_input(
+            "№4", min_value=1, max_value=37, value=None, placeholder="1-37"
+        )
+        n5 = cols[1].number_input(
+            "№5", min_value=1, max_value=37, value=None, placeholder="1-37"
+        )
+        n6 = cols[2].number_input(
+            "№6", min_value=1, max_value=37, value=None, placeholder="1-37"
+        )
 
         st.subheader("Сильное число (1–7):")
-        strong = st.number_input("Сильное число", 1, 7, 1)
+        strong = st.number_input(
+            "Сильное число",
+            min_value=1,
+            max_value=7,
+            value=None,
+            placeholder="1-7",
+        )
 
         submit = st.form_submit_button("Сохранить тираж")
 
     if submit:
         nums = [n1, n2, n3, n4, n5, n6]
-        if len(set(nums)) < 6:
+        if any(v is None for v in nums) or strong is None:
+            st.error("❌ Заполните все 6 чисел и сильное число!")
+        elif len(set(nums)) < 6:
             st.error("❌ Основные числа не должны повторяться!")
         else:
-            add_draw(nums, strong)
-            st.success("✅ Тираж успешно сохранен!")
-            st.rerun()
+            nums_sorted = sorted([int(x) for x in nums])
+            new_row = pd.DataFrame(
+                [[*nums_sorted, int(strong)]], columns=COLUMNS
+            )
+            df_draws = pd.concat([df_draws, new_row], ignore_index=True)
+            if save_data(df_draws):
+                st.success("✅ Тираж сохранен в Облако Mail.ru!")
+                st.rerun()
 
     st.markdown("---")
     st.metric("Всего тиражей в базе", len(df_draws))
 
 # --- Главный экран ---
 if df_draws.empty:
-    st.info("👋 База данных пуста. Введите первый тираж в левой панели!")
+    st.info(
+        "👋 База данных пуста. Заполните и сохраните первый тираж в боковой панели!"
+    )
 else:
-    tab_stat, tab_patterns, tab_history = st.tabs(
+    tab_check, tab_stat, tab_patterns, tab_history = st.tabs(
         [
+            "🎯 Проверка 24 комбинаций",
             "📊 Частотный анализ (Последние 50)",
             "🧩 Повторяющиеся паттерны",
-            "📜 История и управление",
+            "📜 История тиражей",
         ]
     )
 
-    # ==================== ВКЛАДКА 1: ЧАСТОТНЫЙ АНАЛИЗ ====================
+    # ==================== ВКЛАДКА 1: ПРОВЕРКА 24 КОМБИНАЦИЙ ====================
+    with tab_check:
+        st.header("🎯 Сравнение ваших 24 комбинаций с выпавшим тиражом")
+
+        # Выбор тиража для проверки
+        draw_options = {
+            idx: f"Тираж #{idx+1}: {row['n1']}, {row['n2']}, {row['n3']}, {row['n4']}, {row['n5']}, {row['n6']} (Сильное: {row['strong_number']})"
+            for idx, row in df_draws.iterrows()
+        }
+        selected_draw_idx = st.selectbox(
+            "Выберите тираж из базы для проверки:",
+            options=list(reversed(list(draw_options.keys()))),
+            format_func=lambda x: draw_options[x],
+        )
+
+        target_draw = df_draws.loc[selected_draw_idx]
+        target_nums = set(
+            [
+                target_draw["n1"],
+                target_draw["n2"],
+                target_draw["n3"],
+                target_draw["n4"],
+                target_draw["n5"],
+                target_draw["n6"],
+            ]
+        )
+        target_strong = target_draw["strong_number"]
+
+        st.caption(
+            "Вставьте до 24 комбинаций. Формат: **6 чисел через запятую или пробел + сильное число через двоеточие** (например: `3, 12, 18, 22, 29, 35 : 4`). Каждая комбинация с новой строки."
+        )
+
+        default_text = (
+            "1, 2, 3, 4, 5, 6 : 1\n7, 8, 9, 10, 11, 12 : 2"  # Пример
+        )
+        user_input = st.text_area(
+            "Ваши комбинации (до 24 строк):",
+            value=default_text,
+            height=250,
+        )
+
+        if st.button("🔍 Проверить совпадения"):
+            lines = [line.strip() for line in user_input.split("\n") if line.strip()][:24]
+            results = []
+
+            for i, line in enumerate(lines, 1):
+                try:
+                    if ":" in line:
+                        main_part, strong_part = line.split(":")
+                        user_strong = int(strong_part.strip())
+                    else:
+                        main_part = line
+                        user_strong = None
+
+                    # Разбор основных чисел
+                    raw_nums = main_part.replace(",", " ").split()
+                    user_main = set([int(x) for x in raw_nums])
+
+                    if len(user_main) != 6:
+                        results.append(
+                            {
+                                "№": i,
+                                "Введенная комбинация": line,
+                                "Совпало основных": "Ошибка (нужно 6 чисел)",
+                                "Сильное число": "-",
+                                "Статус": "❌ Некорректно",
+                            }
+                        )
+                        continue
+
+                    matched_main = user_main.intersection(target_nums)
+                    count_main = len(matched_main)
+                    strong_match = (
+                        "✅ Да"
+                        if (user_strong and user_strong == target_strong)
+                        else ("❌ Нет" if user_strong else "Не указано")
+                    )
+
+                    matched_str = (
+                        ", ".join(map(str, sorted(matched_main)))
+                        if matched_main
+                        else "Нет"
+                    )
+
+                    results.append(
+                        {
+                            "№": i,
+                            "Введенная комбинация": line,
+                            "Совпало основных": f"{count_main} из 6 ({matched_str})",
+                            "Сильное число": strong_match,
+                            "Результат": f"🎯 {count_main} + {'1' if user_strong == target_strong else '0'}",
+                        }
+                    )
+                except Exception:
+                    results.append(
+                        {
+                            "№": i,
+                            "Введенная комбинация": line,
+                            "Совпало основных": "Ошибка формата",
+                            "Сильное число": "-",
+                            "Результат": "❌ Ошибка",
+                        }
+                    )
+
+            st.dataframe(
+                pd.DataFrame(results),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    # ==================== ВКЛАДКА 2: ЧАСТОТНЫЙ АНАЛИЗ ====================
     with tab_stat:
         st.header("📊 Анализ последних 50 тиражей")
 
-        # Берем последние 50 тиражей
-        df_last50 = df_draws.head(50)
+        df_last50 = df_draws.tail(50)
         total_games = len(df_last50)
 
         st.caption(f"Анализируется тиражей: **{total_games}**")
 
-        # Извлекаем все основные числа
         main_cols = ["n1", "n2", "n3", "n4", "n5", "n6"]
         all_main_numbers = df_last50[main_cols].values.flatten()
         main_counts = Counter(all_main_numbers)
 
-        # Полная частота всех чисел от 1 до 37
         full_main_freq = {num: main_counts.get(num, 0) for num in range(1, 38)}
         sorted_main = sorted(
             full_main_freq.items(), key=lambda x: x[1], reverse=True
@@ -189,22 +321,15 @@ else:
             f"Выпало {least_strong[1]} раз(а)",
         )
 
-        # Полная раскладка по сильным числам
         df_strong_all = pd.DataFrame(
             sorted_strong, columns=["Сильное число", "Выпадений"]
         )
         st.write("Все сильные числа за 50 игр:")
-        st.dataframe(
-            df_strong_all.transpose(),
-            use_container_width=True,
-        )
+        st.dataframe(df_strong_all.transpose(), use_container_width=True)
 
-    # ==================== ВКЛАДКА 2: ПАТТЕРНЫ ====================
+    # ==================== ВКЛАДКА 3: ПАТТЕРНЫ ====================
     with tab_patterns:
         st.header("🧩 Повторяющиеся комбинации (Паттерны)")
-        st.caption(
-            "Поиск пар, троек, четверок, пятерок и шестерок, которые выпадали вместе более 1 раза."
-        )
 
         pattern_size = st.radio(
             "Выберите размер паттерна:",
@@ -213,17 +338,22 @@ else:
             horizontal=True,
         )
 
-        # Сбор всех комбинаций из всех тиражей
         pattern_counter = Counter()
 
         for _, row in df_draws.iterrows():
             draw_nums = sorted(
-                [row["n1"], row["n2"], row["n3"], row["n4"], row["n5"], row["n6"]]
+                [
+                    row["n1"],
+                    row["n2"],
+                    row["n3"],
+                    row["n4"],
+                    row["n5"],
+                    row["n6"],
+                ]
             )
             for comb in combinations(draw_nums, pattern_size):
                 pattern_counter[comb] += 1
 
-        # Фильтруем только повторяющиеся (более 1 раза)
         repeated_patterns = [
             (list(comb), count)
             for comb, count in pattern_counter.items()
@@ -252,10 +382,10 @@ else:
             )
         else:
             st.info(
-                f"Совпадений комбинаций из {pattern_size} чисел пока не найдено (нужно больше тиражей в базе)."
+                f"Совпадений комбинаций из {pattern_size} чисел пока не найдено."
             )
 
-    # ==================== ВКЛАДКА 3: ИСТОРИЯ ====================
+    # ==================== ВКЛАДКА 4: ИСТОРИЯ ====================
     with tab_history:
         st.header("📜 Введенные тиражи")
 
@@ -266,32 +396,17 @@ else:
         )
 
         st.dataframe(
-            df_display[
-                [
-                    "id",
-                    "draw_date",
-                    "Основные числа",
-                    "strong_number",
-                ]
-            ].rename(
-                columns={
-                    "id": "ID",
-                    "draw_date": "Дата добавления",
-                    "strong_number": "Сильное число",
-                }
+            df_display[["Основные числа", "strong_number"]].rename(
+                columns={"strong_number": "Сильное число"}
             ),
             use_container_width=True,
-            hide_index=True,
         )
 
         st.markdown("---")
-        st.subheader("🗑️ Удаление тиража")
-        del_id = st.number_input(
-            "Введите ID тиража для удаления:",
-            min_value=1,
-            step=1,
-        )
-        if st.button("Удалить запись"):
-            delete_draw(del_id)
-            st.success(f"Запись ID {del_id} удалена.")
-            st.rerun()
+        st.subheader("🗑️ Удалить последний тираж")
+        if st.button("Удалить последнюю запись"):
+            if not df_draws.empty:
+                df_draws = df_draws.iloc[:-1]
+                if save_data(df_draws):
+                    st.success("Последняя запись удалена из Облака Mail.ru!")
+                    st.rerun()
