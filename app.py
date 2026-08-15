@@ -11,7 +11,7 @@ st.set_page_config(
     page_title="Анализатор Лотереи 6/37", page_icon="🎰", layout="wide"
 )
 
-# --- Настройки Облака Mail.ru (Secrets) ---
+# --- Настройки подключения ---
 WEBDAV_HOSTNAME = "https://webdav.mail.ru"
 WEBDAV_LOGIN = st.secrets.get("WEBDAV_LOGIN", "")
 WEBDAV_PASSWORD = st.secrets.get("WEBDAV_PASSWORD", "")
@@ -20,7 +20,7 @@ FILENAME = "lotto_history.csv"
 COLUMNS = ["n1", "n2", "n3", "n4", "n5", "n6", "strong_number"]
 
 
-# --- Функции работы с Облаком Mail.ru ---
+# --- Функции загрузки и сохранения в Облако Mail.ru ---
 def load_data():
     """Чтение файла из Облака Mail.ru"""
     url = f"{WEBDAV_HOSTNAME}/{FILENAME}"
@@ -39,7 +39,6 @@ def load_data():
     except Exception:
         pass
 
-    # Если в облаке файла ещё нет, проверяем локальный или создаём пустой
     if os.path.exists(FILENAME):
         try:
             return pd.read_csv(FILENAME)[COLUMNS]
@@ -50,30 +49,33 @@ def load_data():
 
 
 def save_data(df):
-    """Прямая перезапись файла в Облаке Mail.ru через PUT"""
+    """Сохранение в Облако Mail.ru через PUT с явной длиной контента"""
     url = f"{WEBDAV_HOSTNAME}/{FILENAME}"
-    csv_data = df.to_csv(index=False)
+
+    csv_bytes = df.to_csv(index=False).encode("utf-8")
+
+    headers = {
+        "Content-Type": "text/csv; charset=utf-8",
+        "Content-Length": str(len(csv_bytes)),
+    }
 
     try:
         res = requests.put(
             url,
-            data=csv_data.encode("utf-8"),
+            data=csv_bytes,
             auth=HTTPBasicAuth(WEBDAV_LOGIN, WEBDAV_PASSWORD),
-            headers={"Content-Type": "text/csv; charset=utf-8"},
+            headers=headers,
             timeout=10,
         )
 
         if res.status_code in [200, 201, 204]:
-            # Также обновляем копию локально
             df.to_csv(FILENAME, index=False)
             return True
         else:
-            st.error(
-                f"Ошибка сохранения Mail.ru (Код {res.status_code}): {res.reason}"
-            )
+            st.error(f"Ошибка записи в Облако: Код {res.status_code}")
             return False
     except Exception as e:
-        st.error(f"Не удалось связаться с облаком: {e}")
+        st.error(f"Ошибка сети: {e}")
         return False
 
 
@@ -423,5 +425,5 @@ else:
             if not df_draws.empty:
                 df_draws = df_draws.iloc[:-1]
                 if save_data(df_draws):
-                    st.success("Последняя запись удалена из Облака Mail.ru!")
+                    st.success("Запись удалена из Облака Mail.ru!")
                     st.rerun()
