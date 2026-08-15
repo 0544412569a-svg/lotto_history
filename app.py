@@ -34,9 +34,7 @@ def load_data():
         df_empty = pd.DataFrame(columns=COLUMNS)
         df_empty.to_csv(FILENAME, index=False)
         try:
-            client.upload_sync(
-                remote_path=FILENAME, local_path=FILENAME, overwrite=True
-            )
+            client.upload_sync(remote_path=FILENAME, local_path=FILENAME)
         except Exception:
             pass
 
@@ -54,12 +52,19 @@ def load_data():
 
 
 def save_data(df):
-    """Исправленное сохранение файла с флагом перезаписи overwrite=True"""
+    """Сохранение файла с предварительным удалением старой версии из облака"""
     try:
+        # Сохраняем локально
         df.to_csv(FILENAME, index=False)
-        client.upload_sync(
-            remote_path=FILENAME, local_path=FILENAME, overwrite=True
-        )
+
+        # Удаляем существующий файл в облаке, если он там есть
+        try:
+            client.clean(FILENAME)
+        except Exception:
+            pass
+
+        # Загружаем новый файл
+        client.upload_sync(remote_path=FILENAME, local_path=FILENAME)
         return True
     except Exception as e:
         st.error(f"Не удалось сохранить данные в облако: {e}")
