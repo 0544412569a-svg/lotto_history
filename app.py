@@ -11,7 +11,7 @@ st.set_page_config(
     page_title="Анализатор Лотереи 6/37", page_icon="🎰", layout="wide"
 )
 
-# --- Подключение к Облаку Mail.ru через requests (вход в обход 403) ---
+# --- Настройки Облака Mail.ru (Secrets) ---
 WEBDAV_HOSTNAME = "https://webdav.mail.ru"
 WEBDAV_LOGIN = st.secrets.get("WEBDAV_LOGIN", "")
 WEBDAV_PASSWORD = st.secrets.get("WEBDAV_PASSWORD", "")
@@ -19,20 +19,15 @@ WEBDAV_PASSWORD = st.secrets.get("WEBDAV_PASSWORD", "")
 FILENAME = "lotto_history.csv"
 COLUMNS = ["n1", "n2", "n3", "n4", "n5", "n6", "strong_number"]
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-}
 
-
-# --- Функции загрузки и сохранения данных ---
+# --- Функции работы с Облаком Mail.ru ---
 def load_data():
-    """Загрузка файла прямо из WebDAV без вызовов PROPFIND/check"""
+    """Чтение файла из Облака Mail.ru"""
     url = f"{WEBDAV_HOSTNAME}/{FILENAME}"
     try:
         res = requests.get(
             url,
             auth=HTTPBasicAuth(WEBDAV_LOGIN, WEBDAV_PASSWORD),
-            headers=HEADERS,
             timeout=10,
         )
         if res.status_code == 200:
@@ -44,7 +39,7 @@ def load_data():
     except Exception:
         pass
 
-    # В случае отсутствия создаем локально
+    # Если в облаке файла ещё нет, проверяем локальный или создаём пустой
     if os.path.exists(FILENAME):
         try:
             return pd.read_csv(FILENAME)[COLUMNS]
@@ -55,23 +50,26 @@ def load_data():
 
 
 def save_data(df):
-    """Прямая запись PUT в WebDAV Mail.ru"""
+    """Прямая перезапись файла в Облаке Mail.ru через PUT"""
     url = f"{WEBDAV_HOSTNAME}/{FILENAME}"
     csv_data = df.to_csv(index=False)
+
     try:
         res = requests.put(
             url,
             data=csv_data.encode("utf-8"),
             auth=HTTPBasicAuth(WEBDAV_LOGIN, WEBDAV_PASSWORD),
-            headers=HEADERS,
+            headers={"Content-Type": "text/csv; charset=utf-8"},
             timeout=10,
         )
+
         if res.status_code in [200, 201, 204]:
+            # Также обновляем копию локально
             df.to_csv(FILENAME, index=False)
             return True
         else:
             st.error(
-                f"Ошибка сохранения Mail.ru WebDAV: Код {res.status_code} ({res.reason})"
+                f"Ошибка сохранения Mail.ru (Код {res.status_code}): {res.reason}"
             )
             return False
     except Exception as e:
