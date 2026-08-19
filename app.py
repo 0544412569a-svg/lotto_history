@@ -1,5 +1,5 @@
 from collections import Counter
-from io import StringIO
+from io import BytesIO, StringIO
 from itertools import combinations
 import os
 import pandas as pd
@@ -11,7 +11,7 @@ st.set_page_config(
     page_title="Анализатор Лотереи 6/37", page_icon="🎰", layout="wide"
 )
 
-# --- Настройки подключения ---
+# --- Настройки Облака Mail.ru из Secrets ---
 WEBDAV_HOSTNAME = "https://webdav.mail.ru"
 WEBDAV_LOGIN = st.secrets.get("WEBDAV_LOGIN", "")
 WEBDAV_PASSWORD = st.secrets.get("WEBDAV_PASSWORD", "")
@@ -20,15 +20,21 @@ FILENAME = "lotto_history.csv"
 COLUMNS = ["n1", "n2", "n3", "n4", "n5", "n6", "strong_number"]
 
 
-# --- Функции загрузки и сохранения в Облако Mail.ru ---
+def get_auth():
+    return HTTPBasicAuth(WEBDAV_LOGIN, WEBDAV_PASSWORD)
+
+
+# --- Функции чтения и записи ---
 def load_data():
-    """Чтение файла из Облака Mail.ru"""
+    """Автоматическая загрузка данных при запуске приложения"""
     url = f"{WEBDAV_HOSTNAME}/{FILENAME}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
+
     try:
         res = requests.get(
-            url,
-            auth=HTTPBasicAuth(WEBDAV_LOGIN, WEBDAV_PASSWORD),
-            timeout=10,
+            url, auth=get_auth(), headers=headers, timeout=10
         )
         if res.status_code == 200:
             df = pd.read_csv(StringIO(res.text))
@@ -39,6 +45,7 @@ def load_data():
     except Exception:
         pass
 
+    # Резервная загрузка из локальной копии, если облако временно недоступно
     if os.path.exists(FILENAME):
         try:
             return pd.read_csv(FILENAME)[COLUMNS]
@@ -49,36 +56,41 @@ def load_data():
 
 
 def save_data(df):
-    """Сохранение в Облако Mail.ru через PUT с явной длиной контента"""
+    """Автоматическое сохранение данных в Облако Mail.ru"""
     url = f"{WEBDAV_HOSTNAME}/{FILENAME}"
 
-    csv_bytes = df.to_csv(index=False).encode("utf-8")
+    csv_data = df.to_csv(index=False).encode("utf-8")
 
     headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Content-Type": "text/csv; charset=utf-8",
-        "Content-Length": str(len(csv_bytes)),
+        "Content-Length": str(len(csv_data)),
     }
 
     try:
         res = requests.put(
             url,
-            data=csv_bytes,
-            auth=HTTPBasicAuth(WEBDAV_LOGIN, WEBDAV_PASSWORD),
+            data=BytesIO(csv_data),
+            auth=get_auth(),
             headers=headers,
             timeout=10,
         )
 
         if res.status_code in [200, 201, 204]:
+            # Кэшируем успешную запись локально
             df.to_csv(FILENAME, index=False)
             return True
         else:
-            st.error(f"Ошибка записи в Облако: Код {res.status_code}")
+            st.error(
+                f"Ошибка сохранения (Код {res.status_code}). Убедитесь, что файл '{FILENAME}' вручную создан в Облаке Mail.ru."
+            )
             return False
     except Exception as e:
-        st.error(f"Ошибка сети: {e}")
+        st.error(f"Ошибка сети при отправке в Облако: {e}")
         return False
 
 
+# Инициализация базы данных
 df_draws = load_data()
 
 st.title("🎰 Анализатор лотерейных тиражей (6/37 + Сильное число)")
@@ -134,7 +146,7 @@ with st.sidebar:
             )
             df_draws = pd.concat([df_draws, new_row], ignore_index=True)
             if save_data(df_draws):
-                st.success("✅ Тираж сохранен в Облако Mail.ru!")
+                st.success("✅ Тираж успешно сохранен в Облако Mail.ru!")
                 st.rerun()
 
     st.markdown("---")
