@@ -24,7 +24,6 @@ def get_auth():
     return HTTPBasicAuth(WEBDAV_LOGIN, WEBDAV_PASSWORD)
 
 
-# --- Функции чтения и записи ---
 def load_data():
     """Автоматическая загрузка данных при запуске приложения"""
     url = f"{WEBDAV_HOSTNAME}/{FILENAME}"
@@ -45,7 +44,6 @@ def load_data():
     except Exception:
         pass
 
-    # Резервная загрузка из локальной копии, если облако временно недоступно
     if os.path.exists(FILENAME):
         try:
             return pd.read_csv(FILENAME)[COLUMNS]
@@ -58,7 +56,6 @@ def load_data():
 def save_data(df):
     """Автоматическое сохранение данных в Облако Mail.ru"""
     url = f"{WEBDAV_HOSTNAME}/{FILENAME}"
-
     csv_data = df.to_csv(index=False).encode("utf-8")
 
     headers = {
@@ -77,21 +74,28 @@ def save_data(df):
         )
 
         if res.status_code in [200, 201, 204]:
-            # Кэшируем успешную запись локально
             df.to_csv(FILENAME, index=False)
             return True
         else:
-            st.error(
-                f"Ошибка сохранения (Код {res.status_code}). Убедитесь, что файл '{FILENAME}' вручную создан в Облаке Mail.ru."
-            )
+            st.error(f"Ошибка сохранения (Код {res.status_code}).")
             return False
     except Exception as e:
-        st.error(f"Ошибка сети при отправке в Облако: {e}")
+        st.error(f"Ошибка сети: {e}")
         return False
 
 
-# Инициализация базы данных
 df_draws = load_data()
+
+# Значение по умолчанию для текстового поля с 30 комбинациями
+DEFAULT_COMBINATIONS = "\n".join(
+    [
+        f"{i}, {i+1}, {i+2}, {i+3}, {i+4}, {i+5} : {(i % 7) + 1}"
+        for i in range(1, 31)
+    ]
+)
+
+if "saved_user_combinations" not in st.session_state:
+    st.session_state.saved_user_combinations = DEFAULT_COMBINATIONS
 
 st.title("🎰 Анализатор лотерейных тиражей (6/37 + Сильное число)")
 
@@ -146,7 +150,7 @@ with st.sidebar:
             )
             df_draws = pd.concat([df_draws, new_row], ignore_index=True)
             if save_data(df_draws):
-                st.success("✅ Тираж успешно сохранен в Облако Mail.ru!")
+                st.success("✅ Тираж сохранен!")
                 st.rerun()
 
     st.markdown("---")
@@ -160,14 +164,14 @@ if df_draws.empty:
 else:
     tab_check, tab_stat, tab_patterns, tab_history = st.tabs(
         [
-            "🎯 Проверка 24 комбинаций",
-            "📊 Частотный анализ (Последние 50)",
+            "🎯 Проверка 30 комбинаций",
+            "📊 Частотный анализ (Последние 300)",
             "🧩 Повторяющиеся паттерны",
             "📜 История тиражей",
         ]
     )
 
-    # ==================== ВКЛАДКА 1: ПРОВЕРКА 24 КОМБИНАЦИЙ ====================
+    # ==================== ВКЛАДКА 1: ПРОВЕРКА 30 КОМБИНАЦИЙ ====================
     with tab_check:
         st.header("🎯 Сравнение ваших комбинаций с выпавшим тиражом")
 
@@ -195,97 +199,116 @@ else:
         target_strong = target_draw["strong_number"]
 
         st.caption(
-            "Вставьте до 24 комбинаций. Формат: **6 чисел через запятую или пробел : сильное число** (Пример: `3, 12, 18, 22, 29, 35 : 4`). Каждая комбинация с новой строки."
+            "Вставьте до 30 комбинаций. Изменения сохраняются автоматически."
         )
 
-        default_text = "1, 2, 3, 4, 5, 6 : 1\n7, 8, 9, 10, 11, 12 : 2"
         user_input = st.text_area(
-            "Ваши комбинации (до 24 строк):",
-            value=default_text,
-            height=250,
+            "Ваши комбинации (30 строк):",
+            value=st.session_state.saved_user_combinations,
+            height=300,
+            key="user_input_area",
         )
 
-        if st.button("🔍 Проверить совпадения"):
-            lines = [
-                line.strip() for line in user_input.split("\n") if line.strip()
-            ][:24]
-            results = []
+        # Сохранение текста в память приложения при редактировании
+        st.session_state.saved_user_combinations = user_input
 
-            for i, line in enumerate(lines, 1):
-                try:
-                    if ":" in line:
-                        main_part, strong_part = line.split(":")
-                        user_strong = int(strong_part.strip())
-                    else:
-                        main_part = line
-                        user_strong = None
+        lines = [
+            line.strip() for line in user_input.split("\n") if line.strip()
+        ][:30]
+        results = []
 
-                    raw_nums = main_part.replace(",", " ").split()
-                    user_main = set([int(x) for x in raw_nums])
+        for i, line in enumerate(lines, 1):
+            try:
+                if ":" in line:
+                    main_part, strong_part = line.split(":")
+                    user_strong = int(strong_part.strip())
+                else:
+                    main_part = line
+                    user_strong = None
 
-                    if len(user_main) != 6:
-                        results.append(
-                            {
-                                "№": i,
-                                "Введенная комбинация": line,
-                                "Совпало основных": "Ошибка (нужно 6 чисел)",
-                                "Сильное число": "-",
-                                "Результат": "❌ Некорректно",
-                            }
-                        )
-                        continue
+                raw_nums = main_part.replace(",", " ").split()
+                user_main = set([int(x) for x in raw_nums])
 
-                    matched_main = user_main.intersection(target_nums)
-                    count_main = len(matched_main)
-                    strong_match = (
-                        "✅ Да"
-                        if (user_strong and user_strong == target_strong)
-                        else ("❌ Нет" if user_strong else "Не указано")
-                    )
-
-                    matched_str = (
-                        ", ".join(map(str, sorted(matched_main)))
-                        if matched_main
-                        else "Нет"
-                    )
-
+                if len(user_main) != 6:
                     results.append(
                         {
                             "№": i,
                             "Введенная комбинация": line,
-                            "Совпало основных": f"{count_main} из 6 ({matched_str})",
-                            "Сильное число": strong_match,
-                            "Результат": f"🎯 {count_main} + {'1' if user_strong == target_strong else '0'}",
-                        }
-                    )
-                except Exception:
-                    results.append(
-                        {
-                            "№": i,
-                            "Введенная комбинация": line,
-                            "Совпало основных": "Ошибка формата",
+                            "Совпало основных": "Ошибка (нужно 6 чисел)",
                             "Сильное число": "-",
-                            "Результат": "❌ Ошибка",
+                            "Результат": "❌ Некорректно",
                         }
                     )
+                    continue
 
-            st.dataframe(
-                pd.DataFrame(results),
-                use_container_width=True,
-                hide_index=True,
-            )
+                matched_main = user_main.intersection(target_nums)
+                count_main = len(matched_main)
+                strong_match = (
+                    "✅ Да"
+                    if (user_strong and user_strong == target_strong)
+                    else ("❌ Нет" if user_strong else "Не указано")
+                )
 
-    # ==================== ВКЛАДКА 2: ЧАСТОТНЫЙ АНАЛИЗ ====================
+                matched_str = (
+                    ", ".join(map(str, sorted(matched_main)))
+                    if matched_main
+                    else "Нет"
+                )
+
+                results.append(
+                    {
+                        "№": i,
+                        "Введенная комбинация": line,
+                        "Совпало основных": f"{count_main} из 6 ({matched_str})",
+                        "Сильное число": strong_match,
+                        "Результат": f"🎯 {count_main} + {'1' if user_strong == target_strong else '0'}",
+                    }
+                )
+            except Exception:
+                results.append(
+                    {
+                        "№": i,
+                        "Введенная комбинация": line,
+                        "Совпало основных": "Ошибка формата",
+                        "Сильное число": "-",
+                        "Результат": "❌ Ошибка",
+                    }
+                )
+
+        if results:
+            df_res = pd.DataFrame(results)
+
+            # Функция цветового выделения блоков 1-10, 11-20, 21-30
+            def highlight_groups(row):
+                num = row["№"]
+                if 1 <= num <= 10:
+                    return ["background-color: #2b3a4a; color: #ffffff"] * len(
+                        row
+                    )  # Синеватый оттенок
+                elif 11 <= num <= 20:
+                    return ["background-color: #3d342b; color: #ffffff"] * len(
+                        row
+                    )  # Коричневатый оттенок
+                elif 21 <= num <= 30:
+                    return ["background-color: #2b3d30; color: #ffffff"] * len(
+                        row
+                    )  # Зеленоватый оттенок
+                return [""] * len(row)
+
+            styled_df = df_res.style.apply(highlight_groups, axis=1)
+            st.dataframe(styled_df, use_container_width=True, hide_index=True)
+
+    # ==================== ВКЛАДКА 2: ЧАСТОТНЫЙ АНАЛИЗ (300 ИГР) ====================
     with tab_stat:
-        st.header("📊 Анализ последних 50 тиражей")
+        st.header("📊 Анализ последних 300 тиражей")
 
-        df_last50 = df_draws.tail(50)
-        total_games = len(df_last50)
+        df_last300 = df_draws.tail(300)
+        total_games = len(df_last300)
 
-        st.caption(f"Анализируется тиражей: **{total_games}**")
+        st.caption(f"Анализируется тиражей в базе: **{total_games}**")
 
         main_cols = ["n1", "n2", "n3", "n4", "n5", "n6"]
-        all_main_numbers = df_last50[main_cols].values.flatten()
+        all_main_numbers = df_last300[main_cols].values.flatten()
         main_counts = Counter(all_main_numbers)
 
         full_main_freq = {num: main_counts.get(num, 0) for num in range(1, 38)}
@@ -327,7 +350,7 @@ else:
         st.markdown("---")
         st.subheader("⭐ Статистика Сильного числа (1–7)")
 
-        strong_counts = Counter(df_last50["strong_number"])
+        strong_counts = Counter(df_last300["strong_number"])
         full_strong_freq = {
             num: strong_counts.get(num, 0) for num in range(1, 8)
         }
@@ -353,7 +376,7 @@ else:
         df_strong_all = pd.DataFrame(
             sorted_strong, columns=["Сильное число", "Выпадений"]
         )
-        st.write("Все сильные числа за 50 игр:")
+        st.write("Все сильные числа за период:")
         st.dataframe(df_strong_all.transpose(), use_container_width=True)
 
     # ==================== ВКЛАДКА 3: ПАТТЕРНЫ ====================
